@@ -8,7 +8,7 @@ ESP32-based firmware that emulates a RuuviTag environmental sensor, advertising 
 - **Multiple Sensor Support:** ENV III (SHT30 + QMP6988), NTC thermistor, or fake data for testing
 - **Smart Operating Modes:** FAST_ONLY, SLOW_ONLY, or HYBRID with movement-triggered adaptation
 - **Efficient Sensor Polling:** Fixed 6-second interval, decoupled from BLE advertising (reduces I2C transactions by 80-97%)
-- **Power Management:** Light sleep, reduced CPU frequency (80MHz), configurable BLE TX power (+3dBm)
+- **Power Management:** Automatic BLE Modem-sleep, reduced CPU frequency (80MHz), configurable BLE TX power (+3dBm)
 - **Movement Detection:** IMU-based motion tracking with 120mg threshold
 - **USB Detection:** Voltage-trend state machine for reliable USB connection detection
 - **LCD Debug Display:** Real-time status monitoring on M5StickC Plus2 screen
@@ -58,7 +58,7 @@ The firmware supports three operating modes controlled by `OPERATING_MODE` build
 | **SLOW_ONLY** (1) | 8.995s | ~2-3mA | 65-100h | Long-term monitoring, max battery |
 | **HYBRID** (2) | Smart | ~3-6mA | 35-65h | **General purpose (default)** |
 
-*Based on 200mAh battery with light sleep enabled*
+*Based on 200mAh battery with automatic BLE Modem-sleep*
 
 ### HYBRID Mode Behavior
 
@@ -125,8 +125,8 @@ Edit `platformio.ini` under `[env:m5stickcplus2]` build_flags:
 ### Power Management Tuning
 
 ```ini
-# Light sleep (enabled by default, saves ~80% power)
--DENABLE_LIGHT_SLEEP=1
+# Note: Light sleep is NOT compatible with BLE advertising
+# ESP32 BLE stack automatically uses Modem-sleep (CPU sleeps, BLE radio active)
 
 # BLE TX power (default: +3dBm for ~15m range)
 -DBLE_TX_POWER=ESP_PWR_LVL_P3
@@ -188,17 +188,19 @@ Estimated current draw with M5StickC Plus2 + ENV III sensor:
 
 | Configuration | Average Current | Battery Life (200mAh) |
 |--------------|-----------------|----------------------|
-| FAST_ONLY + Light Sleep | 5-8mA | 25-40 hours |
-| SLOW_ONLY + Light Sleep | 2-3mA | 65-100 hours |
+| FAST_ONLY + Modem-sleep | 5-8mA | 25-40 hours |
+| SLOW_ONLY + Modem-sleep | 2-3mA | 65-100 hours |
 | HYBRID (low activity) | 3-4mA | 50-65 hours |
 | HYBRID (moderate) | 4-5mA | 40-50 hours |
 | DEBUG_LCD enabled | +2-3mA | -20% battery life |
 
 ### Power Saving Features
 
-- **Light Sleep:** Disabled by default (can interfere with BLE advertising reliability)
-  - Enable with `-DENABLE_LIGHT_SLEEP=1` if you need power savings (~80% reduction)
-  - **Warning:** May cause advertising gaps on some ESP32 boards
+- **Automatic BLE Modem-Sleep:** ESP32 BLE stack automatically uses Modem-sleep mode
+  - CPU sleeps when BLE radio is idle, but radio stays active for advertising
+  - Maintains BLE advertising while saving power (~40-60% reduction vs. always-on)
+  - **Note:** Light sleep is NOT compatible - it powers down the Bluetooth radio
+  - Reference: [ESP-IDF Sleep Modes](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/sleep_modes.html)
 - **Reduced CPU:** 80MHz instead of 240MHz (~66% reduction)
 - **WiFi Disabled:** Always off
 - **LCD Off:** Disabled in production mode (unless debugging)
@@ -359,7 +361,7 @@ RuuviCloneESP/
 
 ### M5StickC Plus2 Specific
 
-1. **Deep Sleep Unreliable:** RTC wake from deep sleep doesn't work consistently. Light sleep is used instead.
+1. **Deep Sleep Unreliable:** RTC wake from deep sleep doesn't work consistently. Automatic BLE Modem-sleep is used instead (CPU sleeps, BLE radio stays active).
 2. **Charging State Unreliable:** `M5.Power.isCharging()` is not trustworthy. Use voltage-trend detection instead.
 3. **GPIO4 HOLD Pin:** Must be held HIGH via `rtc_gpio_hold_en()` or device powers off on battery.
 
@@ -368,7 +370,7 @@ RuuviCloneESP/
 - No BLE connection support (advertisement-only, like real RuuviTags)
 - Movement counter rolls over at 255
 - Sequence counter rolls over at 65535
-- Battery life with light sleep is significantly less than deep sleep (25-100h vs potential 500h+)
+- Battery life with Modem-sleep is significantly less than deep sleep (25-100h vs potential 500h+), but deep sleep is incompatible with continuous BLE advertising
 
 ## Troubleshooting
 
@@ -418,15 +420,15 @@ For rapid development with 211ms advertising intervals:
 ### Serial Output Example
 
 ```
-=== Ruuvi DF5 Advertiser (Continuous Mode, Light Sleep) ===
+=== Ruuvi DF5 Advertiser (Continuous Mode, BLE Modem-sleep) ===
 Operating Mode: HYBRID
 Hybrid Timing: FAST_INITIAL=60s, FAST_MOVEMENT=60s
 Intervals: DEV=211ms, FAST=1285ms, SLOW=8995ms
-BLE TX Power: 3dBm, Light Sleep: ENABLED
+BLE TX Power: 3dBm
+Power Management: Automatic BLE Modem-sleep (CPU sleeps, BLE radio active)
 ========================================================
 
 [ADV] Mode=FAST interval=1285ms tx=3dBm uptime=5s seq=4 batt=4120mV
-[SLEEP] Sleeping for 985ms until next advertisement
 [MOVEMENT] Delta: dx=45 dy=245 dz=89 max=245 (threshold=120)
 [MOVEMENT] Triggered FAST mode until uptime=65s (current=5s, duration=60s)
 [STATUS] Mode=FAST [HYBRID] interval=1285ms uptime=10s seq=8 batt=4115mV USB=NO

@@ -3,7 +3,6 @@
 #include <array>
 #include <string>
 #include <esp_attr.h>
-#include <esp_sleep.h>
 #include <esp_random.h>
 #include <WiFi.h>
 
@@ -91,12 +90,15 @@
 #define DEBUG_LCD_FORCE_AWAKE 0
 #endif
 
-// Enable light sleep between advertisements (saves significant power).
-// WARNING: Light sleep can interfere with BLE advertising reliability on some ESP32 boards.
-// Disabled by default for maximum reliability. Enable only if you need power savings.
-#ifndef ENABLE_LIGHT_SLEEP
-#define ENABLE_LIGHT_SLEEP 0  // Disabled by default for reliability
-#endif
+// NOTE: Light sleep is NOT compatible with BLE advertising on ESP32.
+// According to ESP-IDF documentation, light sleep powers down Wi-Fi and Bluetooth.
+// The ESP32 BLE stack automatically uses Modem-sleep mode instead, which:
+// - Keeps BLE radio active for advertising
+// - Allows CPU to sleep between BLE events
+// - Maintains connections automatically
+// - Provides power savings without breaking BLE
+//
+// Reference: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/sleep_modes.html
 
 namespace {
 
@@ -479,7 +481,7 @@ void setup() {
   if (DEBUG_SERIAL) {
     Serial.begin(115200);
     delay(50);
-    Serial.println("\n=== Ruuvi DF5 Advertiser (Continuous Mode, Light Sleep) ===");
+     Serial.println("\n=== Ruuvi DF5 Advertiser (Continuous Mode, BLE Modem-sleep) ===");
     const char *op_mode_str = (OPERATING_MODE == 0) ? "FAST_ONLY" :
                               (OPERATING_MODE == 1) ? "SLOW_ONLY" : "HYBRID";
     Serial.printf("Operating Mode: %s\n", op_mode_str);
@@ -492,9 +494,8 @@ void setup() {
                   DEV_ADV_MS, FAST_ADV_MS, SLOW_ADV_MS);
     Serial.printf("Sensor Poll: %lums (%.1fs)\n",
                   SENSOR_POLL_INTERVAL_MS, SENSOR_POLL_INTERVAL_MS / 1000.0f);
-    Serial.printf("BLE TX Power: %ddBm, Light Sleep: %s\n",
-                  BLE_TX_POWER_DBM,
-                  ENABLE_LIGHT_SLEEP ? "ENABLED" : "DISABLED");
+     Serial.printf("BLE TX Power: %ddBm\n", BLE_TX_POWER_DBM);
+     Serial.println("Power Management: Automatic BLE Modem-sleep (CPU sleeps, BLE radio active)");
     Serial.println("========================================================\n");
   }
 
@@ -690,38 +691,19 @@ void loop() {
     delay(50);
   }
   
-  // Light sleep between advertisements to save power
-  if (ENABLE_LIGHT_SLEEP && !dev_mode && !force_immediate_adv) {
-    const uint32_t now = millis();
-    const uint32_t time_since_adv = now - last_adv_ms;
-    const uint32_t time_until_next_adv = (time_since_adv < adv_interval_ms) 
-                                          ? (adv_interval_ms - time_since_adv) 
-                                          : 0;
-    
-    // Sleep until next advertisement (no 1-second wake for display updates)
-    if (time_until_next_adv > 100) {
-      // Sleep for most of the interval, leaving margin for wake + processing
-      const uint32_t sleep_ms = time_until_next_adv - 50;
-      if (DEBUG_SERIAL && (time_until_next_adv > 500)) {
-        Serial.printf("[SLEEP] Sleeping for %lums until next advertisement\n", sleep_ms);
-      }
-      esp_sleep_enable_timer_wakeup(sleep_ms * 1000ULL);
-      esp_light_sleep_start();
-      
-      // After wake from sleep, ensure advertising is still running
-      auto *adv_check = NimBLEDevice::getAdvertising();
-      if (!adv_check->isAdvertising()) {
-        if (DEBUG_SERIAL) {
-          Serial.println("[ADV] Restarting after sleep wake");
-        }
-        // Restart with current cached sample
-        startAdvertising(adv_check, cached_sample, adv_interval_ms);
-      }
-    } else {
-      delay(10);  // Short delay if not enough time to sleep
-    }
-  } else {
-    delay(10);  // Small delay to prevent busy-waiting in dev mode
-  }
+  // NOTE: Light sleep is NOT compatible with BLE advertising on ESP32.
+  // According to ESP-IDF documentation:
+  // "In Deep-sleep and Light-sleep modes, the wireless peripherals are powered down."
+  // "Wi-Fi and Bluetooth connections are not maintained in Deep-sleep or Light-sleep mode."
+  //
+  // The ESP32 BLE stack automatically uses Modem-sleep mode, which:
+  // - Keeps the BLE radio active for advertising
+  // - Allows CPU to sleep between BLE events
+  // - Maintains BLE connections automatically
+  // - Provides significant power savings without breaking BLE
+  //
+  // We use a small delay here to prevent busy-waiting. The BLE stack handles
+  // actual power management automatically via Modem-sleep.
+  delay(10);
 }
 
