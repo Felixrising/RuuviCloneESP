@@ -9,6 +9,12 @@
 
 #include "config/board_config.h"
 #include "sensors/sensor_select.h"
+#include "history/history_log.h"
+#include "history/history_nus.h"
+
+// Global history instances
+HistoryLog g_history_log;
+HistoryNUS g_history_nus;
 
 // Minimal Ruuvi RAWv2 (DF5) advertisement with sensor framework:
 // - Fake data (default fallback)
@@ -417,6 +423,10 @@ uint16_t intervalUnitsFromMs(uint32_t ms) {
 void startAdvertising(NimBLEAdvertising *adv,
                       const SensorSample &sample,
                       uint32_t adv_ms) {
+  // Avoid advertising updates while a client is connected.
+  if (HISTORY_LOG_ENABLE && g_history_nus.isConnected()) {
+    return;
+  }
   const auto mac = parseMac(NimBLEDevice::getAddress().toString());
   const auto df5 = buildDf5Payload(sample, mac);
   const auto mfg = buildManufacturerData(df5);
@@ -426,13 +436,14 @@ void startAdvertising(NimBLEAdvertising *adv,
   advData.setManufacturerData(mfg);
 
   NimBLEAdvertisementData srData;
-  std::string name = std::string("Ruuvi-ESP32 ") + FW_VERSION_STR;
+  // Keep scan response small so UUIDs aren't truncated.
+  std::string name = "Ruuvi";
   srData.setName(name); // visible to scanners on active scan
 
-  // Battery Service (0x180F) with level percent.
-  uint8_t batt_pct = batteryPercentFromMv(sample.battery_mv);
-  std::string batt_payload(reinterpret_cast<char *>(&batt_pct), sizeof(batt_pct));
-  srData.setServiceData(NimBLEUUID((uint16_t)0x180F), batt_payload);
+  // Advertise GATT service UUIDs so clients know we support them.
+  srData.addServiceUUID(NimBLEUUID(NUS_SERVICE_UUID));  // Nordic UART Service for history
+  srData.addServiceUUID(NimBLEUUID((uint16_t)0x180A));   // Device Information Service
+  srData.addServiceUUID(NimBLEUUID((uint16_t)0xFC98));   // Ruuvi service (Ruuvi Air/Tag scan)
 
   adv->setAdvertisementData(advData);
   adv->setScanResponseData(srData);
@@ -465,7 +476,7 @@ void setup() {
   if (DEBUG_SERIAL) {
     Serial.begin(115200);
     delay(50);
-    Serial.println("\n=== Ruuvi DF5 Advertiser (Continuous Mode, Light Sleep) ===");
+    Serial.println("\n=== Ruuvi DF5 Advertiser v2024.01.17 WITH HISTORY ===");
     const char *op_mode_str = (OPERATING_MODE == 0) ? "FAST_ONLY" :
                               (OPERATING_MODE == 1) ? "SLOW_ONLY" : "HYBRID";
     Serial.printf("Operating Mode: %s\n", op_mode_str);
@@ -488,6 +499,43 @@ void setup() {
   WiFi.mode(WIFI_OFF);
   WiFi.disconnect(true, true);
 
+  // Initialize history logging
+  if (HISTORY_LOG_ENABLE) {
+    if (g_history_log.begin()) {
+      if (DEBUG_SERIAL) {
+        uint32_t total, max, oldest, newest;
+        g_history_log.getStats(total, max, oldest, newest);
+        Serial.printf("[HISTORY] Initialized: %u/%u entries, %u-%u\n",
+                      total, max, oldest, newest);
+        
+        // Add test data if empty (for immediate testing)
+        if (total == 0) {
+          Serial.println("[HISTORY] Adding test data for immediate testing...");
+          uint32_t base_ts = g_history_log.getCurrentTimestamp() - 600; // 10 min ago
+          for (int i = 0; i < 3; i++) {
+            HistoryEntry test_entry;
+            test_entry.timestamp = base_ts + (i * 300); // 5 min intervals
+            test_entry.temperature = encodeTemperature(20.0f + i);
+            test_entry.humidity = encodeHumidity(50.0f + i);
+            test_entry.pressure = encodePressure(1013.25f + i);
+            test_entry.accel_x = 0;
+            test_entry.accel_y = 0;
+            test_entry.accel_z = 0;
+            test_entry.battery_mv = 3300 + (i * 100);
+            test_entry.movement_count = i;
+            test_entry.reserved = 0;
+            g_history_log.logEntry(test_entry);
+          }
+          Serial.println("[HISTORY] Added 3 test entries");
+        }
+      }
+    } else {
+      if (DEBUG_SERIAL) {
+        Serial.println("[HISTORY] Failed to initialize");
+      }
+    }
+  }
+
   NimBLEDevice::init("Ruuvi-ESP32");
   NimBLEDevice::setPower(BLE_TX_POWER);
   
@@ -497,12 +545,27 @@ void setup() {
     Serial.printf("BLE TX Power: %ddBm\n", BLE_TX_POWER_DBM);
   }
 
+  // Initialize BLE server for NUS (Nordic UART Service)
+  NimBLEServer *server = NimBLEDevice::createServer();
+  if (server && HISTORY_LOG_ENABLE) {
+    g_history_nus.begin(server);
+    
+    // *** CRITICAL: Start the server AFTER all services are configured ***
+    server->start();
+    
+    if (DEBUG_SERIAL) {
+      Serial.println("[NUS] Service added to BLE server");
+      Serial.println("[BLE] Server started, ready for connections");
+    }
+  }
+
   sensors_init();
 }
 
 void loop() {
   static uint32_t last_adv_ms = 0;
   static uint32_t last_status_ms = 0;
+  static uint32_t last_history_log_ms = 0;
   static bool force_immediate_adv = false;  // Force next advertisement immediately after movement
   const uint32_t now_ms = millis();
   
@@ -584,6 +647,31 @@ void loop() {
     
     auto *adv = NimBLEDevice::getAdvertising();
     SensorSample sample = readSensors();
+    
+    // Log to history every HISTORY_INTERVAL_SEC (5 minutes default)
+    if (HISTORY_LOG_ENABLE && (now_ms - last_history_log_ms >= HISTORY_INTERVAL_SEC * 1000)) {
+      last_history_log_ms = now_ms;
+      
+      HistoryEntry entry;
+      entry.timestamp = g_history_log.getCurrentTimestamp();
+      entry.temperature = encodeTemperature(sample.temperature_c);
+      entry.humidity = encodeHumidity(sample.humidity_rh);
+      entry.pressure = encodePressure(sample.pressure_hpa);
+      entry.accel_x = sample.accel_x_mg;
+      entry.accel_y = sample.accel_y_mg;
+      entry.accel_z = sample.accel_z_mg;
+      entry.battery_mv = batt_mv_raw;
+      entry.movement_count = gMovementCounter;
+      entry.reserved = 0;
+      
+      if (g_history_log.logEntry(entry)) {
+        if (DEBUG_SERIAL) {
+          Serial.printf("[HISTORY] Logged entry: ts=%u, t=%.2f, h=%.2f, p=%.2f\n",
+                        entry.timestamp, sample.temperature_c, 
+                        sample.humidity_rh, sample.pressure_hpa);
+        }
+      }
+    }
     
     // Update movement counter (always), but only trigger FAST mode in HYBRID mode
     if (updateMovementCounter(sample) && OPERATING_MODE == 2) {

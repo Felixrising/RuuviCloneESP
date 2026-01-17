@@ -3,4 +3,6 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
-references/references/
+
+# Reference repositories (cloned locally, not tracked)
+references/
