@@ -440,6 +440,7 @@ void startAdvertising(NimBLEAdvertising *adv,
   std::string batt_payload(reinterpret_cast<char *>(&batt_pct), sizeof(batt_pct));
   srData.setServiceData(NimBLEUUID((uint16_t)0x180F), batt_payload);
 
+  // Update advertising data (this can be done while advertising is running)
   adv->setAdvertisementData(advData);
   adv->setScanResponseData(srData);
   
@@ -450,10 +451,10 @@ void startAdvertising(NimBLEAdvertising *adv,
   adv->setMinInterval(minIntervalUnits);
   adv->setMaxInterval(maxIntervalUnits);
 
-  if (adv->isAdvertising()) {
-    adv->stop();
+  // Only start if not already advertising (keep it running continuously)
+  if (!adv->isAdvertising()) {
+    adv->start();
   }
-  adv->start();
 
   if (DEBUG_SERIAL) {
     Serial.printf("T=%.2fC H=%.2f%% P=%.2fhPa Batt=%umV Accel=[%d,%d,%d] Tx=%ddBm Mov=%u\n",
@@ -516,6 +517,7 @@ void loop() {
   static uint32_t last_adv_ms = 0;
   static uint32_t last_status_ms = 0;
   static uint32_t last_sensor_poll_ms = 0;
+  static uint32_t last_adv_health_check_ms = 0;
   static SensorSample cached_sample = {};  // Cached sensor reading
   static bool force_immediate_adv = false;  // Force next advertisement immediately after movement
   const uint32_t now_ms = millis();
@@ -583,6 +585,19 @@ void loop() {
     }
   }
 
+  // Periodic advertising health check (every 5s) - ensure it's still running
+  if ((now_ms - last_adv_health_check_ms >= 5000) || last_adv_health_check_ms == 0) {
+    last_adv_health_check_ms = now_ms;
+    auto *adv_check = NimBLEDevice::getAdvertising();
+    if (!adv_check->isAdvertising()) {
+      if (DEBUG_SERIAL) {
+        Serial.println("[ADV] WARNING: Advertising stopped! Restarting...");
+      }
+      // Restart with current cached sample and current interval
+      startAdvertising(adv_check, cached_sample, adv_interval_ms);
+    }
+  }
+
   // Poll sensors at fixed interval (decoupled from advertising)
   if ((now_ms - last_sensor_poll_ms >= SENSOR_POLL_INTERVAL_MS) || last_sensor_poll_ms == 0) {
     last_sensor_poll_ms = now_ms;
@@ -624,6 +639,8 @@ void loop() {
       }
     }
     
+    // Update advertising data and restart if needed
+    // Keep advertising running continuously - don't stop it!
     startAdvertising(adv, sample, adv_interval_ms);
     
     if (DEBUG_SERIAL) {
@@ -637,8 +654,8 @@ void loop() {
                     batt_mv_raw);
     }
     
-    delay(ADV_BURST_MS);
-    adv->stop();
+    // Small delay to ensure advertising starts properly
+    delay(50);
   }
   
   // Light sleep between advertisements to save power
@@ -658,6 +675,16 @@ void loop() {
       }
       esp_sleep_enable_timer_wakeup(sleep_ms * 1000ULL);
       esp_light_sleep_start();
+      
+      // After wake from sleep, ensure advertising is still running
+      auto *adv_check = NimBLEDevice::getAdvertising();
+      if (!adv_check->isAdvertising()) {
+        if (DEBUG_SERIAL) {
+          Serial.println("[ADV] Restarting after sleep wake");
+        }
+        // Restart with current cached sample
+        startAdvertising(adv_check, cached_sample, adv_interval_ms);
+      }
     } else {
       delay(10);  // Short delay if not enough time to sleep
     }
