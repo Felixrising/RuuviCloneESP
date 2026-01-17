@@ -47,10 +47,10 @@
 #define SLOW_ADV_MS 8995
 #endif
 
-// Sensor polling interval (independent of advertising interval)
-// Default 6000ms = 6 seconds, reasonable for environmental sensors
-#ifndef SENSOR_POLL_INTERVAL_MS
-#define SENSOR_POLL_INTERVAL_MS 6000
+// Minimum sensor polling interval (to avoid hammering sensors in FAST mode)
+// Environmental sensors don't need sub-second updates
+#ifndef SENSOR_POLL_MIN_INTERVAL_MS
+#define SENSOR_POLL_MIN_INTERVAL_MS 2000  // 2 seconds minimum
 #endif
 
 // Advertising burst duration (how long to advertise before stopping and restarting).
@@ -492,8 +492,8 @@ void setup() {
     }
     Serial.printf("Intervals: DEV=%lums, FAST=%lums, SLOW=%lums\n",
                   DEV_ADV_MS, FAST_ADV_MS, SLOW_ADV_MS);
-    Serial.printf("Sensor Poll: %lums (%.1fs)\n",
-                  SENSOR_POLL_INTERVAL_MS, SENSOR_POLL_INTERVAL_MS / 1000.0f);
+    Serial.printf("Sensor Poll: Dynamic (min=%lums, matches advertising interval)\n",
+                  SENSOR_POLL_MIN_INTERVAL_MS);
      Serial.printf("BLE TX Power: %ddBm\n", BLE_TX_POWER_DBM);
      Serial.println("Power Management: Automatic BLE Modem-sleep (CPU sleeps, BLE radio active)");
     Serial.println("========================================================\n");
@@ -622,13 +622,19 @@ void loop() {
     }
   }
 
-  // Poll sensors at fixed interval (decoupled from advertising)
-  if ((now_ms - last_sensor_poll_ms >= SENSOR_POLL_INTERVAL_MS) || last_sensor_poll_ms == 0) {
+  // Poll sensors at the same rate as advertising (or minimum interval, whichever is longer)
+  // This minimizes I2C transactions while ensuring fresh data for each advertisement
+  // In SLOW mode: poll every 8.995s (same as advertising) - no wasted polls
+  // In FAST mode: poll every 2s minimum (to avoid hammering sensors, even though ads are 1.285s)
+  const uint32_t sensor_poll_interval_ms = (adv_interval_ms > SENSOR_POLL_MIN_INTERVAL_MS) 
+                                            ? adv_interval_ms 
+                                            : SENSOR_POLL_MIN_INTERVAL_MS;
+  if ((now_ms - last_sensor_poll_ms >= sensor_poll_interval_ms) || last_sensor_poll_ms == 0) {
     last_sensor_poll_ms = now_ms;
     cached_sample = readSensors();
     if (DEBUG_SERIAL) {
-      Serial.printf("[SENSOR] Polled at uptime=%lus (interval=%lums)\n", 
-                    now_ms / 1000, SENSOR_POLL_INTERVAL_MS);
+      Serial.printf("[SENSOR] Polled at uptime=%lus (interval=%lums, adv_interval=%lums)\n", 
+                    now_ms / 1000, sensor_poll_interval_ms, adv_interval_ms);
     }
   }
 
