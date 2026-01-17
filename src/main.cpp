@@ -442,9 +442,13 @@ void startAdvertising(NimBLEAdvertising *adv,
 
   adv->setAdvertisementData(advData);
   adv->setScanResponseData(srData);
-  uint16_t intervalUnits = intervalUnitsFromMs(adv_ms + jitterMs());
-  adv->setMinInterval(intervalUnits);
-  adv->setMaxInterval(intervalUnits);
+  
+  // BLE spec requires random jitter to avoid collisions with other advertisers
+  // Set min/max to create a range, BLE stack picks random interval in this window
+  uint16_t minIntervalUnits = intervalUnitsFromMs(adv_ms);
+  uint16_t maxIntervalUnits = intervalUnitsFromMs(adv_ms + JITTER_MS_MAX);
+  adv->setMinInterval(minIntervalUnits);
+  adv->setMaxInterval(maxIntervalUnits);
 
   if (adv->isAdvertising()) {
     adv->stop();

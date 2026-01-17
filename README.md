@@ -291,13 +291,20 @@ Uses filtered voltage-trend state machine:
 
 ## Advertisement Intervals
 
-Aligned with official RuuviTag firmware:
+Aligned with official RuuviTag firmware, with **BLE-spec compliant jitter** to prevent collisions with other advertisers:
 
-| Mode | Interval | Source |
-|------|----------|--------|
-| DEV (Test) | 211ms ± 0-10ms | Test firmware |
-| FAST (Default) | 1285ms ± 0-10ms | Default firmware |
-| SLOW (Long-life) | 8995ms ± 0-10ms | Long-life firmware |
+| Mode | Base Interval | Actual Range | Source |
+|------|---------------|--------------|--------|
+| DEV (Test) | 211ms | 211-221ms | Test firmware |
+| FAST (Default) | 1285ms | 1285-1295ms | Default firmware |
+| SLOW (Long-life) | 8995ms | 8995-9005ms | Long-life firmware |
+
+**Jitter Implementation:**
+- Min interval = base interval
+- Max interval = base interval + 10ms
+- BLE stack randomly picks actual interval within this window each time
+- Prevents collisions with other BLE advertisers in area (per BLE spec)
+- Configurable via `-DJITTER_MS_MAX=10` (default: 10ms, matches Ruuvi firmware)
 
 Reference: [Ruuvi BLE Advertisements](https://docs.ruuvi.com/communication/bluetooth-advertisements)
 
