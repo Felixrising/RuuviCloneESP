@@ -7,6 +7,7 @@ ESP32-based firmware that emulates a RuuviTag environmental sensor, advertising 
 - **Ruuvi DF5 (RAWv2) Compliant:** Advertises as manufacturer ID `0x0499` with correct payload format
 - **Multiple Sensor Support:** ENV III (SHT30 + QMP6988), NTC thermistor, or fake data for testing
 - **Smart Operating Modes:** FAST_ONLY, SLOW_ONLY, or HYBRID with movement-triggered adaptation
+- **Efficient Sensor Polling:** Fixed 6-second interval, decoupled from BLE advertising (reduces I2C transactions by 80-97%)
 - **Power Management:** Light sleep, reduced CPU frequency (80MHz), configurable BLE TX power (+3dBm)
 - **Movement Detection:** IMU-based motion tracking with 120mg threshold
 - **USB Detection:** Voltage-trend state machine for reliable USB connection detection
@@ -88,6 +89,28 @@ Edit `platformio.ini` under `[env:m5stickcplus2]` build_flags:
 -DFAST_MODE_INITIAL_MS=60000   # 60s: FAST mode after boot
 -DFAST_MODE_MOVEMENT_MS=60000  # 60s: FAST mode after movement
 ```
+
+### Sensor Polling
+
+**Sensor polling is decoupled from BLE advertising for efficiency:**
+
+```ini
+-DSENSOR_POLL_INTERVAL_MS=6000  # Default: 6s (10 polls/min)
+```
+
+**Why this matters:**
+- Sensors are now polled at a **fixed 6-second interval** regardless of BLE advertising rate
+- Advertisement uses **cached sensor readings** between polls
+- **Benefits:**
+  - 80% reduction in I2C transactions in FAST mode (1.3s ads, 6s polls)
+  - 97% reduction in DEV mode (211ms ads, 6s polls)
+  - Lower power consumption
+  - iOS-friendly: Can use fast BLE intervals without hammering sensors
+  - Aligns with Ruuvi Station app expectations (~5-6s update rate)
+
+**Recommended values:**
+- **5000-10000ms** for environmental sensors (temperature/humidity changes slowly)
+- **1000-3000ms** if you need rapid updates (e.g., for movement-based applications)
 
 ### Debug Options
 
