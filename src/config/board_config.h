@@ -1,6 +1,11 @@
 #pragma once
 
 #include <stdint.h>
+#include <Arduino.h>
+
+#if defined(ESP32)
+#include <driver/adc.h>
+#endif
 
 // Board profiles
 #define BOARD_PROFILE_GENERIC 0
@@ -61,6 +66,18 @@
 #define BOARD_POWER_HOLD_PIN 4
 #endif
 
+// Battery source selection:
+//  0 = Fixed voltage (no battery monitoring)
+//  1 = Internal power management IC (M5StickC Plus2)
+//  2 = External ADC with voltage divider
+#ifndef BATTERY_SOURCE
+#if BOARD_PROFILE == BOARD_PROFILE_M5STICKCPLUS2
+#define BATTERY_SOURCE 1
+#else
+#define BATTERY_SOURCE 0  // Default: no battery monitoring
+#endif
+#endif
+
 // Battery reporting defaults per board profile.
 #ifndef BATTERY_REPORT_MODE
 #if BOARD_PROFILE == BOARD_PROFILE_M5STICKCPLUS2
@@ -82,6 +99,40 @@
 #endif
 #ifndef BATTERY_DF5_MAX_MV
 #define BATTERY_DF5_MAX_MV 3600
+#endif
+
+// ADC battery monitoring (BATTERY_SOURCE = 2)
+#ifndef BATTERY_ADC_PIN
+#define BATTERY_ADC_PIN 1  // GPIO1 on ESP32-S3
+#endif
+
+#ifndef BATTERY_ADC_ATTENUATION
+#define BATTERY_ADC_ATTENUATION ADC_ATTEN_DB_12  // 0-3.3V range
+#endif
+
+// Voltage divider: Vbat -> R1 -> ADC_PIN -> R2 -> GND
+// Vbat = Vadc * (R1 + R2) / R2
+#ifndef BATTERY_VDIV_R1
+#define BATTERY_VDIV_R1 100000  // 100k ohm (top resistor)
+#endif
+
+#ifndef BATTERY_VDIV_R2
+#define BATTERY_VDIV_R2 100000  // 100k ohm (bottom resistor, to GND)
+#endif
+
+// ADC reference voltage in millivolts (ESP32-S3 default with 12dB atten)
+#ifndef BATTERY_ADC_VREF_MV
+#define BATTERY_ADC_VREF_MV 3300
+#endif
+
+// Number of samples to average for ADC reading
+#ifndef BATTERY_ADC_SAMPLES
+#define BATTERY_ADC_SAMPLES 10
+#endif
+
+// Fixed voltage for boards without battery monitoring (mV)
+#ifndef BATTERY_FIXED_MV
+#define BATTERY_FIXED_MV 3300
 #endif
 
 inline void board_init() {
@@ -120,9 +171,28 @@ inline void board_wake_pulse_led() {
 }
 
 inline int board_read_battery_level() {
+#if BATTERY_SOURCE == 1
+  // Internal power management IC
 #if BOARD_PROFILE == BOARD_PROFILE_M5STICKCPLUS2
   return M5.Power.getBatteryLevel();
 #else
+  return -1;
+#endif
+
+#elif BATTERY_SOURCE == 2
+  // Calculate from ADC reading (simple linear mapping)
+  uint16_t mv = board_read_battery_mv();
+  if (mv <= BATTERY_REAL_MIN_MV) {
+    return 0;
+  }
+  if (mv >= BATTERY_REAL_MAX_MV) {
+    return 100;
+  }
+  int percent = ((mv - BATTERY_REAL_MIN_MV) * 100) / (BATTERY_REAL_MAX_MV - BATTERY_REAL_MIN_MV);
+  return percent;
+
+#else
+  // BATTERY_SOURCE == 0: No monitoring
   return -1;
 #endif
 }
@@ -150,6 +220,8 @@ inline bool board_dev_mode_enabled() {
 }
 
 inline uint16_t board_read_battery_mv() {
+#if BATTERY_SOURCE == 1
+  // Internal power management IC (M5StickC Plus2)
 #if BOARD_PROFILE == BOARD_PROFILE_M5STICKCPLUS2
   uint32_t mv = M5.Power.getBatteryVoltage();
   if (mv > 0 && mv < 10000) {
@@ -159,9 +231,37 @@ inline uint16_t board_read_battery_mv() {
   if (level > 0) {
     return static_cast<uint16_t>(3000 + (level * 12)); // 3.0V..4.2V
   }
-  // Do not trust charging state on this device.
 #endif
   return 3300;
+
+#elif BATTERY_SOURCE == 2
+  // External ADC with voltage divider
+  analogSetAttenuation(static_cast<adc_attenuation_t>(BATTERY_ADC_ATTENUATION));
+  
+  // Average multiple samples for stability
+  uint32_t sum = 0;
+  for (int i = 0; i < BATTERY_ADC_SAMPLES; i++) {
+    sum += analogRead(BATTERY_ADC_PIN);
+    if (i < BATTERY_ADC_SAMPLES - 1) {
+      delay(1);
+    }
+  }
+  uint32_t adc_avg = sum / BATTERY_ADC_SAMPLES;
+  
+  // Convert ADC reading to millivolts at the ADC pin
+  // ESP32 ADC is 12-bit (0-4095)
+  uint32_t vadc_mv = (adc_avg * BATTERY_ADC_VREF_MV) / 4095;
+  
+  // Calculate battery voltage using voltage divider ratio
+  // Vbat = Vadc * (R1 + R2) / R2
+  uint32_t vbat_mv = (vadc_mv * (BATTERY_VDIV_R1 + BATTERY_VDIV_R2)) / BATTERY_VDIV_R2;
+  
+  return static_cast<uint16_t>(vbat_mv);
+
+#else
+  // BATTERY_SOURCE == 0: Fixed voltage (no monitoring)
+  return BATTERY_FIXED_MV;
+#endif
 }
 
 inline void board_debug_refresh(const char *mode_label,

@@ -115,6 +115,26 @@ Edit `platformio.ini` under `[env:m5stickcplus2]` build_flags:
 -DVBAT_SCORE_MAX=15            # Higher = slower switching
 ```
 
+### Battery Monitoring Configuration
+
+```ini
+# Battery source selection
+-DBATTERY_SOURCE=0             # 0=Fixed, 1=Internal IC, 2=ADC divider
+
+# For ADC divider (BATTERY_SOURCE=2)
+-DBATTERY_ADC_PIN=1            # GPIO pin for voltage reading
+-DBATTERY_VDIV_R1=100000       # Top resistor (ohms)
+-DBATTERY_VDIV_R2=100000       # Bottom resistor (ohms)
+-DBATTERY_ADC_SAMPLES=10       # Average N samples for stability
+
+# Battery voltage range (for percentage calculation)
+-DBATTERY_REAL_MIN_MV=3000     # Empty voltage
+-DBATTERY_REAL_MAX_MV=4200     # Full voltage
+
+# DF5 reporting mode
+-DBATTERY_REPORT_MODE=1        # 1=Clip, 2=Map (see Battery section)
+```
+
 ## LCD Debug Display
 
 When `DEBUG_LCD=1` is enabled, the M5StickC Plus2 displays real-time status:
@@ -161,9 +181,70 @@ Estimated current draw with M5StickC Plus2 + ENV III sensor:
 
 ## Battery & USB Detection
 
-### Battery Reporting
+### Battery Source Selection
 
-Two modes via `BATTERY_REPORT_MODE`:
+Three battery monitoring options via `BATTERY_SOURCE`:
+
+| Source | Mode | Description | Hardware Required |
+|--------|------|-------------|-------------------|
+| **0** | Fixed | Reports fixed 3.3V | None (default for generic boards) |
+| **1** | Internal IC | Uses onboard power management | M5StickC Plus2, etc. |
+| **2** | ADC Divider | Reads external voltage via ADC | Voltage divider on ADC pin |
+
+#### ADC Voltage Divider Configuration (BATTERY_SOURCE=2)
+
+For boards without internal battery management, connect an external battery through a voltage divider:
+
+```
+Battery+ ──[R1=100kΩ]──┬── ADC_PIN (GPIO1)
+                       │
+                    [R2=100kΩ]
+                       │
+Battery- ──────────────┴── GND
+```
+
+**Build Flags:**
+
+```ini
+-DBATTERY_SOURCE=2                 # Enable ADC battery monitoring
+-DBATTERY_ADC_PIN=1                # GPIO pin for ADC reading
+-DBATTERY_VDIV_R1=100000           # Top resistor (ohms)
+-DBATTERY_VDIV_R2=100000           # Bottom resistor (ohms)
+-DBATTERY_ADC_VREF_MV=3300         # ADC reference voltage (mV)
+-DBATTERY_ADC_SAMPLES=10           # Number of samples to average
+-DBATTERY_ADC_ATTENUATION=ADC_ATTEN_DB_12  # 0-3.3V range
+```
+
+**Voltage Divider Calculator:**
+- For 0-8.4V battery (2S Li-ion): Use R1=R2 (2:1 divider, max 4.2V at ADC)
+- For 0-4.2V battery (1S Li-ion): Use R1=R2 (2:1 divider, max 2.1V at ADC) or direct connection
+- Always ensure ADC voltage stays below 3.3V (use 12dB attenuation for full 0-3.3V range)
+
+**Example Configurations:**
+
+```ini
+# Single cell Li-ion (3.0-4.2V) with 2:1 divider (safe for any ADC pin)
+-DBATTERY_SOURCE=2
+-DBATTERY_VDIV_R1=100000
+-DBATTERY_VDIV_R2=100000
+-DBATTERY_REAL_MIN_MV=3000
+-DBATTERY_REAL_MAX_MV=4200
+
+# Dual cell Li-ion (6.0-8.4V) with 3:1 divider
+-DBATTERY_SOURCE=2
+-DBATTERY_VDIV_R1=200000
+-DBATTERY_VDIV_R2=100000
+-DBATTERY_REAL_MIN_MV=6000
+-DBATTERY_REAL_MAX_MV=8400
+
+# Fixed 3.3V (no battery monitoring)
+-DBATTERY_SOURCE=0
+-DBATTERY_FIXED_MV=3300
+```
+
+### Battery Reporting Modes
+
+Two encoding modes via `BATTERY_REPORT_MODE` (how voltage is encoded in DF5):
 
 1. **Clip Mode (1):** Clamps real voltage to DF5 limits (1600-3646mV)
 2. **Map Mode (2, default for M5StickC Plus2):** Maps Li-ion range (3.0-4.2V) to DF5 safe range (1.9-3.6V)
