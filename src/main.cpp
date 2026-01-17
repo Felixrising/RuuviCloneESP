@@ -48,6 +48,12 @@
 #define SLOW_ADV_MS 8995
 #endif
 
+// Sensor polling interval (independent of advertising interval)
+// Default 6000ms = 6 seconds, reasonable for environmental sensors
+#ifndef SENSOR_POLL_INTERVAL_MS
+#define SENSOR_POLL_INTERVAL_MS 6000
+#endif
+
 // Advertising burst duration (how long to advertise before stopping and restarting).
 #ifndef ADV_BURST_MS
 #define ADV_BURST_MS 300
@@ -476,6 +482,8 @@ void setup() {
     }
     Serial.printf("Intervals: DEV=%lums, FAST=%lums, SLOW=%lums\n",
                   DEV_ADV_MS, FAST_ADV_MS, SLOW_ADV_MS);
+    Serial.printf("Sensor Poll: %lums (%.1fs)\n",
+                  SENSOR_POLL_INTERVAL_MS, SENSOR_POLL_INTERVAL_MS / 1000.0f);
     Serial.printf("BLE TX Power: %ddBm, Light Sleep: %s\n",
                   BLE_TX_POWER_DBM,
                   ENABLE_LIGHT_SLEEP ? "ENABLED" : "DISABLED");
@@ -503,6 +511,8 @@ void setup() {
 void loop() {
   static uint32_t last_adv_ms = 0;
   static uint32_t last_status_ms = 0;
+  static uint32_t last_sensor_poll_ms = 0;
+  static SensorSample cached_sample = {};  // Cached sensor reading
   static bool force_immediate_adv = false;  // Force next advertisement immediately after movement
   const uint32_t now_ms = millis();
   
@@ -569,6 +579,16 @@ void loop() {
     }
   }
 
+  // Poll sensors at fixed interval (decoupled from advertising)
+  if ((now_ms - last_sensor_poll_ms >= SENSOR_POLL_INTERVAL_MS) || last_sensor_poll_ms == 0) {
+    last_sensor_poll_ms = now_ms;
+    cached_sample = readSensors();
+    if (DEBUG_SERIAL) {
+      Serial.printf("[SENSOR] Polled at uptime=%lus (interval=%lums)\n", 
+                    now_ms / 1000, SENSOR_POLL_INTERVAL_MS);
+    }
+  }
+
   // Advertise at mode-appropriate interval (or immediately if movement detected)
   if (force_immediate_adv || (now_ms - last_adv_ms >= adv_interval_ms)) {
     last_adv_ms = now_ms;
@@ -583,7 +603,8 @@ void loop() {
     }
     
     auto *adv = NimBLEDevice::getAdvertising();
-    SensorSample sample = readSensors();
+    // Use cached sensor reading instead of polling every advertisement
+    SensorSample sample = cached_sample;
     
     // Update movement counter (always), but only trigger FAST mode in HYBRID mode
     if (updateMovementCounter(sample) && OPERATING_MODE == 2) {
