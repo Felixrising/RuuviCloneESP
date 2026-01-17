@@ -92,8 +92,10 @@
 #endif
 
 // Enable light sleep between advertisements (saves significant power).
+// WARNING: Light sleep can interfere with BLE advertising reliability on some ESP32 boards.
+// Disabled by default for maximum reliability. Enable only if you need power savings.
 #ifndef ENABLE_LIGHT_SLEEP
-#define ENABLE_LIGHT_SLEEP 1
+#define ENABLE_LIGHT_SLEEP 0  // Disabled by default for reliability
 #endif
 
 namespace {
@@ -104,6 +106,7 @@ uint8_t gMovementCounter = 0;
 uint32_t gUptimeMs = 0;
 uint32_t gFastUntilMs = 0;
 uint16_t gLastBattMv = 0;
+uint32_t gAdvRestartCount = 0;  // Track advertising restart events for diagnostics
 bool gUsbState = false;
 float gVf = 0.0f;
 float gSf = 0.0f;
@@ -520,6 +523,7 @@ void loop() {
   static uint32_t last_adv_health_check_ms = 0;
   static SensorSample cached_sample = {};  // Cached sensor reading
   static bool force_immediate_adv = false;  // Force next advertisement immediately after movement
+  static bool first_loop = true;  // Track first loop iteration
   const uint32_t now_ms = millis();
   
   // Update uptime
@@ -568,14 +572,15 @@ void loop() {
     last_status_ms = now_ms;
     const char *op_mode_str = (OPERATING_MODE == 0) ? " [FAST_ONLY]" :
                               (OPERATING_MODE == 1) ? " [SLOW_ONLY]" : " [HYBRID]";
-    Serial.printf("[STATUS] Mode=%s%s interval=%lums uptime=%lus seq=%u batt=%umV USB=%s\n",
+    Serial.printf("[STATUS] Mode=%s%s interval=%lums uptime=%lus seq=%u batt=%umV USB=%s adv_restarts=%lu\n",
                   mode_label,
                   op_mode_str,
                   adv_interval_ms,
                   gUptimeMs / 1000,
                   gMeasurementSeq,
                   batt_mv_raw,
-                  usb ? "YES" : "NO");
+                  usb ? "YES" : "NO",
+                  gAdvRestartCount);
     if (OPERATING_MODE == 2) {
       const uint32_t fast_countdown_s = (gFastUntilMs > gUptimeMs) ? (gFastUntilMs - gUptimeMs) / 1000 : 0;
       Serial.printf("[HYBRID] fast_until=%lus, FAST_INITIAL=%lus, FAST_MOVEMENT=%lus\n",
@@ -585,16 +590,34 @@ void loop() {
     }
   }
 
-  // Periodic advertising health check (every 5s) - ensure it's still running
-  if ((now_ms - last_adv_health_check_ms >= 5000) || last_adv_health_check_ms == 0) {
+  // Aggressive advertising health check (every 1s) - ensure it's still running
+  // This catches any cases where BLE stack stops advertising unexpectedly
+  if ((now_ms - last_adv_health_check_ms >= 1000) || last_adv_health_check_ms == 0) {
     last_adv_health_check_ms = now_ms;
     auto *adv_check = NimBLEDevice::getAdvertising();
     if (!adv_check->isAdvertising()) {
+      gAdvRestartCount++;
+      // CRITICAL: Advertising stopped! Restart immediately
       if (DEBUG_SERIAL) {
-        Serial.println("[ADV] WARNING: Advertising stopped! Restarting...");
+        Serial.printf("[ADV] CRITICAL: Advertising stopped at uptime=%lus! (restart #%lu) Restarting immediately...\n",
+                      now_ms / 1000, gAdvRestartCount);
       }
-      // Restart with current cached sample and current interval
+      // Force restart with current cached sample and current interval
       startAdvertising(adv_check, cached_sample, adv_interval_ms);
+      
+      // Verify it actually started
+      delay(100);
+      if (!adv_check->isAdvertising()) {
+        if (DEBUG_SERIAL) {
+          Serial.println("[ADV] ERROR: Failed to restart advertising! Attempting full BLE restart...");
+        }
+        // Last resort: stop and restart BLE stack
+        NimBLEDevice::deinit(true);
+        delay(500);
+        NimBLEDevice::init("Ruuvi-ESP32");
+        NimBLEDevice::setPower(BLE_TX_POWER);
+        startAdvertising(adv_check, cached_sample, adv_interval_ms);
+      }
     }
   }
 
@@ -608,7 +631,16 @@ void loop() {
     }
   }
 
-  // Advertise at mode-appropriate interval (or immediately if movement detected)
+  // Force immediate advertising on first loop iteration
+  if (first_loop) {
+    first_loop = false;
+    force_immediate_adv = true;
+    if (DEBUG_SERIAL) {
+      Serial.println("[ADV] First loop - starting advertising immediately");
+    }
+  }
+
+  // Advertise at mode-appropriate interval (or immediately if movement detected or first loop)
   if (force_immediate_adv || (now_ms - last_adv_ms >= adv_interval_ms)) {
     last_adv_ms = now_ms;
     force_immediate_adv = false;

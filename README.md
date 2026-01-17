@@ -196,7 +196,9 @@ Estimated current draw with M5StickC Plus2 + ENV III sensor:
 
 ### Power Saving Features
 
-- **Light Sleep:** Sleeps between advertisements (~80% power reduction)
+- **Light Sleep:** Disabled by default (can interfere with BLE advertising reliability)
+  - Enable with `-DENABLE_LIGHT_SLEEP=1` if you need power savings (~80% reduction)
+  - **Warning:** May cause advertising gaps on some ESP32 boards
 - **Reduced CPU:** 80MHz instead of 240MHz (~66% reduction)
 - **WiFi Disabled:** Always off
 - **LCD Off:** Disabled in production mode (unless debugging)
